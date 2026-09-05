@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ file_name }}</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Raleway|Delius">
+    <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            font-family: 'Raleway', sans-serif;
+            overflow-x: hidden;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        marquee { font-size: 18px; font-weight: 600; color: #fff; background: rgba(0,0,0,0.9); padding: 10px; font-family: 'Delius', serif; width: 100%; }
+        .container { width: 100%; background: #000; position: relative; }
+        .video-js { width: 100% !important; height: auto !important; aspect-ratio: 16 / 9; }
+
+        /* HIDE NATIVE DOWNLOAD CONTROLS */
+        video::-webkit-media-controls-download-button { display: none !important; }
+        video::-webkit-media-controls-enclosure { overflow: hidden !important; }
+
+        .vjs-tech { object-fit: contain; }
+        .tap-indicator { position: absolute; top: 50%; transform: translateY(-50%); font-size: 60px; color: rgba(255,255,255,0.95); pointer-events: none; z-index: 10000; animation: tapFade 0.5s ease-out forwards; }
+        .tap-indicator.left  { left: 50px; }
+        .tap-indicator.right { right: 50px; }
+        @keyframes tapFade { 0% { opacity: 1; transform: translateY(-50%) scale(0.8); } 50% { transform: translateY(-50%) scale(1.2); } 100% { opacity: 0; transform: translateY(-50%) scale(0.8); } }
+        .vjs-control-bar { background: linear-gradient(transparent, rgba(0,0,0,0.85)) !important; }
+        .vjs-big-play-button { border-radius: 50% !important; width: 2em !important; height: 2em !important; line-height: 2em !important; left: 50% !important; top: 50% !important; transform: translate(-50%, -50%) !important; }
+        .vjs-quality-button .vjs-icon-placeholder::before { content: 'HD'; font-size: 1.5em; line-height: 1.67; }
+
+        @media (max-width: 768px) {
+            marquee { font-size: 14px; }
+            .tap-indicator { font-size: 48px; }
+        }
+    </style>
+</head>
+<body>
+    <header><marquee><div id="file-name">{{ file_name }}</div></marquee></header>
+
+    <div class="container">
+        <!-- Fixed: closed the video tag properly before the source -->
+        <video id="player"
+            class="video-js vjs-default-skin vjs-big-play-centered"
+            controls
+            preload="metadata"
+            playsinline
+            controlsList="nodownload"
+            oncontextmenu="return false;"
+            crossorigin="anonymous">
+            <source src="{{ file_url }}" type="application/x-mpegURL">
+        </video>
+    </div>
+
+    <!-- Video.js core -->
+    <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
+    <!-- Quality Levels plugin (for custom menu) -->
+    <script src="https://cdn.jsdelivr.net/npm/videojs-contrib-quality-levels@4.1.0/dist/videojs-contrib-quality-levels.min.js"></script>
+
+    <!-- Google IMA SDK (required for VAST ads) -->
+    <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
+    <!-- Video.js IMA plugin -->
+    <script src="https://cdn.jsdelivr.net/npm/videojs-ima@2/dist/videojs.ima.min.js"></script>
+
+    <script>
+    (function() {
+        'use strict';
+        const playerElement = document.getElementById('player');
+        const container = document.querySelector('.container');
+        const isVideo = playerElement.tagName.toLowerCase() === 'video';
+        let lastTapTime = 0, lastTapSide = null;
+
+        // Custom Quality Button
+        const QualityButton = videojs.extend(videojs.getComponent('MenuButton'), {
+            constructor: function(p, o) {
+                videojs.getComponent('MenuButton').call(this, p, o);
+                this.addClass('vjs-quality-button');
+                this.controlText('Quality');
+            },
+            createItems: function() {
+                const items = [];
+                const levels = this.player().qualityLevels();
+                if (!levels) return items;
+                const MenuItem = videojs.getComponent('MenuItem');
+                items.push(new MenuItem(this.player(), { label: 'Auto', selected: true, selectable: true }));
+                const heights = [];
+                for (let i = 0; i < levels.length; i++) {
+                    if (levels[i].height && !heights.includes(levels[i].height)) heights.push(levels[i].height);
+                }
+                heights.sort((a, b) => b - a).forEach(h => {
+                    const item = new MenuItem(this.player(), { label: h + 'p', selectable: true });
+                    item.on('click', () => {
+                        for (let i = 0; i < levels.length; i++) levels[i].enabled = (levels[i].height === h);
+                    });
+                    items.push(item);
+                });
+                return items;
+            }
+        });
+        videojs.registerComponent('QualityButton', QualityButton);
+
+        // Build the ADX VAST tag with a random correlator
+        const baseAdTag = "https://pubads.g.doubleclick.net/gampad/live/ads?iu=/23205238319/main_video_adunit&description_url=https%3A%2F%2Fweb.afrahtafreeh.site&tfcd=0&npa=0&sz=640x480&gdfp_req=1&unviewed_position_start=1&output=vast&env=vp&impl=s";
+        const correlator = Math.floor(Math.random() * 10000000000);
+        const adTagUrl = baseAdTag + "&correlator=" + correlator;
+
+        const player = videojs('player', {
+            playbackRates: [0.5, 1, 1.5, 2, 2.5, 3],
+            nativeControlsForTouch: false,
+            controlBar: {
+                children: ['playToggle', 'progressControl', 'volumePanel', 'qualityButton', 'playbackRateMenuButton', 'fullscreenToggle']
+            },
+            html5: {
+                vhs: {
+                    overrideNative: true,
+                    enableLowInitialPlaylist: true,
+                    fastQualityChange: true,
+                    useBandwidthFromLocalStorage: true
+                }
+            },
+            // IMA plugin configuration for VAST ads
+            plugins: {
+                ima: {
+                    adTagUrl: adTagUrl
+                }
+            }
+        });
+
+        // ─────────────────────────────────────────
+        // PLAYER CONTROLS & INTERACTIONS
+        // ─────────────────────────────────────────
+
+        // DISABLE LONG PRESS & CONTEXT MENU
+        playerElement.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); return false; }, true);
+
+        let pressTimer;
+        playerElement.addEventListener('touchstart', e => {
+            pressTimer = setTimeout(() => { e.preventDefault(); }, 500);
+        }, { passive: false });
+
+        playerElement.addEventListener('touchend',  () => clearTimeout(pressTimer));
+        playerElement.addEventListener('touchmove', () => clearTimeout(pressTimer));
+
+        // DOUBLE TAP TO SEEK (10s)
+        function handleTap(e) {
+            if (!isVideo) return;
+            const now = Date.now();
+            const rect = playerElement.getBoundingClientRect();
+            const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
+            const isLeft = x < rect.width / 2;
+            if (now - lastTapTime < 300 && isLeft === lastTapSide) {
+                if (isLeft) { player.currentTime(Math.max(0, player.currentTime() - 10)); showIndicator('left', '⏪ 10s'); }
+                else { player.currentTime(Math.min(player.duration(), player.currentTime() + 10)); showIndicator('right', '10s ⏩'); }
+            }
+            lastTapTime = now; lastTapSide = isLeft;
+        }
+
+        function showIndicator(side, text) {
+            const el = document.createElement('div');
+            el.className = `tap-indicator ${side}`;
+            el.innerHTML = text;
+            container.appendChild(el);
+            setTimeout(() => el.remove(), 500);
+        }
+
+        player.ready(() => {
+            playerElement.addEventListener('touchstart', handleTap, { passive: true });
+            playerElement.addEventListener('click', handleTap);
+        });
+    })();
+    </script>
+</body>
+</html>

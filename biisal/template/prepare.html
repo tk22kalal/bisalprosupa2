@@ -1,0 +1,319 @@
+<!--(c) NobiDeveloper-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{file_name}} - Generate Stream</title>
+    <style>
+        body {
+            background: white;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        .player-buttons {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        .player-btn {
+            background: #2c5282;
+            color: white;
+            border: none;
+            width: 180px;
+            height: 60px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .player-btn:hover { background: #1a365d; }
+        .player-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+        /* Download manager buttons */
+        .dm-buttons {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        @media (min-width: 480px) {
+            .dm-buttons { flex-direction: row; justify-content: center; }
+        }
+
+        .dm-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            padding: 10px 22px;
+            font-size: 15px;
+            font-weight: 600;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 0.3s, transform 0.15s, opacity 0.2s;
+            white-space: nowrap;
+            min-width: 120px;
+            color: #fff;
+            background: #2c5282;
+        }
+
+        .dm-btn:hover  { background: #1a365d; transform: translateY(-1px); }
+        .dm-btn:active { transform: scale(0.97); }
+        .dm-btn.loading-btn {
+            opacity: 0.6;
+            cursor: wait;
+            pointer-events: none;
+        }
+
+        .dm-label {
+            font-size: 12px;
+            color: #888;
+            margin-top: 8px;
+        }
+
+        .loading {
+            display: none;
+            margin-top: 30px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #2c5282;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 10px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: #2c5282;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .status-message {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            display: none;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error   { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+
+        @media (max-width: 480px) {
+            .player-btn { width: 140px; height: 55px; font-size: 14px; }
+            .dm-btn { width: 160px; font-size: 14px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="player-buttons">
+            <button type="button" class="player-btn" id="plyrBtn"    onclick="generateStream('plyr')"    aria-label="Stream IOS/PC">IOS/PC</button>
+            <button type="button" class="player-btn" id="videojsBtn" onclick="generateStream('videojs')" aria-label="Stream ANDROID">ANDROID</button>
+        </div>
+
+        <!-- Download manager buttons (shown after link is generated) -->
+        <div class="dm-buttons" id="dmButtons">
+            <!-- Direct -->
+            <a id="btnDirect" class="dm-btn" href="#" download>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 3v13M7 11l5 5 5-5"/><path d="M5 20h14"/>
+                </svg>
+                Direct
+            </a>
+            <!-- ADM – Android -->
+            <a id="btnAdm" class="dm-btn" href="#">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5S11 23.33 11 22.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-1C2.67 17 2 16.33 2 15.5v-7C2 7.67 2.67 7 3.5 7S5 7.67 5 8.5v7c0 .83-.67 1.5-1.5 1.5zm17 0c-.83 0-1.5-.67-1.5-1.5v-7c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v7c0 .83-.67 1.5-1.5 1.5zM15.27 2.18l1.27-1.27a.496.496 0 0 0 0-.7.503.503 0 0 0-.71 0L14.35 1.69C13.61 1.25 12.84 1 12 1s-1.61.25-2.35.69L8.17.21a.503.503 0 0 0-.71 0 .496.496 0 0 0 0 .7l1.27 1.27C7.09 3.08 6 4.92 6 7h12c0-2.08-1.09-3.92-2.73-4.82zM10 5H9V4h1v1zm5 0h-1V4h1v1z"/>
+                </svg>
+                ADM
+            </a>
+            <!-- IDM – Android -->
+            <a id="btnIdm" class="dm-btn" href="#">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5S11 23.33 11 22.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-1C2.67 17 2 16.33 2 15.5v-7C2 7.67 2.67 7 3.5 7S5 7.67 5 8.5v7c0 .83-.67 1.5-1.5 1.5zm17 0c-.83 0-1.5-.67-1.5-1.5v-7c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v7c0 .83-.67 1.5-1.5 1.5zM15.27 2.18l1.27-1.27a.496.496 0 0 0 0-.7.503.503 0 0 0-.71 0L14.35 1.69C13.61 1.25 12.84 1 12 1s-1.61.25-2.35.69L8.17.21a.503.503 0 0 0-.71 0 .496.496 0 0 0 0 .7l1.27 1.27C7.09 3.08 6 4.92 6 7h12c0-2.08-1.09-3.92-2.73-4.82zM10 5H9V4h1v1zm5 0h-1V4h1v1z"/>
+                </svg>
+                IDM
+            </a>
+            <!-- Readdle Documents – iOS -->
+            <a id="btnReaddle" class="dm-btn" href="#">
+                <svg width="13" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
+                </svg>
+                Readdle
+            </a>
+        </div>
+        <p class="dm-label" id="dmLabel"></p>
+
+        <div class="loading">
+            <div class="spinner"></div>
+            <p class="loading-text" id="loadingText">Generating link...</p>
+        </div>
+
+        <div class="status-message" id="statusMessage"></div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const linkType  = urlParams.get('type');
+
+        window.addEventListener('DOMContentLoaded', () => {
+            if (linkType === 'download') {
+                document.querySelector('.player-buttons').style.display = 'none';
+                startDownload();
+            }
+        });
+
+        async function generateStream(playerType, retryCount = 0) {
+            const buttons     = document.querySelectorAll('.player-btn');
+            const loading     = document.querySelector('.loading');
+            const statusMsg   = document.getElementById('statusMessage');
+            const loadingText = document.getElementById('loadingText');
+
+            buttons.forEach(b => b.disabled = true);
+            loading.style.display = 'block';
+            statusMsg.style.display = 'none';
+            loadingText.textContent = `Generating ${playerType === 'plyr' ? 'IOS/PC' : 'ANDROID'} stream link...${retryCount > 0 ? ` (Retry ${retryCount}/5)` : ''}`;
+
+            try {
+                const controller = new AbortController();
+                const tid = setTimeout(() => controller.abort(), 45000);
+                const response = await fetch(`/api/generate/{{token}}?player=${playerType}`, {
+                    signal: controller.signal,
+                    headers: { 'Accept': 'application/json' }
+                });
+                clearTimeout(tid);
+
+                const ct = response.headers.get('content-type') || '';
+                if (!ct.includes('application/json')) throw new Error('Server returned non-JSON response. Please try again.');
+
+                const data = await response.json();
+                if (data.success) {
+                    statusMsg.className = 'status-message success';
+                    statusMsg.textContent = '✅ Stream link generated! Redirecting...';
+                    statusMsg.style.display = 'block';
+                    setTimeout(() => window.location.href = data.stream_url, 1500);
+                } else {
+                    throw new Error(data.error || 'Failed to generate stream link');
+                }
+            } catch (error) {
+                const maxRetries = 5;
+                const delay = Math.min(2000 * Math.pow(1.5, retryCount), 10000);
+                if ((error.name === 'AbortError' || error.message.includes('JSON')) && retryCount < maxRetries) {
+                    statusMsg.className = 'status-message warning';
+                    statusMsg.textContent = `⏳ Retrying in ${Math.round(delay / 1000)}s... (${retryCount + 1}/${maxRetries})`;
+                    statusMsg.style.display = 'block';
+                    setTimeout(() => generateStream(playerType, retryCount + 1), delay);
+                    return;
+                }
+                statusMsg.className = 'status-message error';
+                statusMsg.textContent = '❌ ' + (error.name === 'AbortError' ? 'Request timed out. Please try again.' : error.message);
+                statusMsg.style.display = 'block';
+                buttons.forEach(b => b.disabled = false);
+                loading.style.display = 'none';
+            }
+        }
+
+        async function startDownload(retryCount = 0) {
+            const buttons     = document.querySelectorAll('.player-btn');
+            const loading     = document.querySelector('.loading');
+            const statusMsg   = document.getElementById('statusMessage');
+            const loadingText = document.getElementById('loadingText');
+
+            buttons.forEach(b => b.disabled = true);
+            loading.style.display = 'block';
+            statusMsg.style.display = 'none';
+            loadingText.textContent = `Generating download link...${retryCount > 0 ? ` (Retry ${retryCount}/5)` : ''}`;
+
+            try {
+                const controller = new AbortController();
+                const tid = setTimeout(() => controller.abort(), 45000);
+                const response = await fetch('/api/download/{{token}}', {
+                    signal: controller.signal,
+                    headers: { 'Accept': 'application/json' }
+                });
+                clearTimeout(tid);
+
+                const ct = response.headers.get('content-type') || '';
+                if (!ct.includes('application/json')) throw new Error('Server returned non-JSON response. Please try again.');
+
+                const data = await response.json();
+                if (data.success) {
+                    loading.style.display = 'none';
+                    statusMsg.className = 'status-message success';
+                    statusMsg.textContent = '✅ Choose how to download:';
+                    statusMsg.style.display = 'block';
+                    buttons.forEach(b => b.disabled = false);
+
+                    // Build intent URLs
+                    const url = data.download_url;
+                    const scheme  = url.startsWith('https') ? 'https' : 'http';
+                    const stripped = url.replace(/^https?:\/\//, '');
+
+                    // Readdle Documents: replace http(s):// with rhttp(s)://
+                    const rScheme = scheme === 'https' ? 'rhttps' : 'rhttp';
+
+                    document.getElementById('btnDirect').href  = url;
+                    document.getElementById('btnAdm').href     = 'intent://' + stripped + '#Intent;scheme=' + scheme + ';package=com.dv.adm;end';
+                    document.getElementById('btnIdm').href     = 'intent://' + stripped + '#Intent;scheme=' + scheme + ';package=idm.internet.download.manager;end';
+                    document.getElementById('btnReaddle').href = rScheme + '://' + stripped;
+
+                    document.getElementById('dmButtons').style.display = 'flex';
+                    document.getElementById('dmLabel').textContent = 'ADM & IDM: Android  •  Readdle: iOS';
+                } else {
+                    throw new Error(data.error || 'Failed to generate download link');
+                }
+            } catch (error) {
+                const maxRetries = 5;
+                const delay = Math.min(2000 * Math.pow(1.5, retryCount), 10000);
+                if ((error.name === 'AbortError' || error.message.includes('JSON')) && retryCount < maxRetries) {
+                    statusMsg.className = 'status-message warning';
+                    statusMsg.textContent = `⏳ Retrying in ${Math.round(delay / 1000)}s... (${retryCount + 1}/${maxRetries})`;
+                    statusMsg.style.display = 'block';
+                    setTimeout(() => startDownload(retryCount + 1), delay);
+                    return;
+                }
+                statusMsg.className = 'status-message error';
+                statusMsg.textContent = '❌ ' + (error.name === 'AbortError' ? 'Request timed out. Please try again.' : error.message);
+                statusMsg.style.display = 'block';
+                buttons.forEach(b => b.disabled = false);
+                loading.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
