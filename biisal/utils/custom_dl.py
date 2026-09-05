@@ -1,4 +1,3 @@
-import math
 import asyncio
 import logging
 from biisal.vars import Var
@@ -184,55 +183,40 @@ class ByteStreamer:
         chunk_size: int,
     ) -> Union[str, None]:
         """
-        Custom generator that yields the bytes of the media file with background prefetching.
+        Yield media chunks sequentially without prefetching.
+
+        The previous implementation kept a three-chunk producer queue ahead of
+        the client. That made playback smoother but pulled Telegram data that
+        could be abandoned after a seek or disconnect. Sequential reads keep
+        upstream traffic aligned with bytes actually being sent.
         """
         client = self.client
         work_loads[index] += 1
         logging.debug(f"Starting to yielding file with client {index}.")
 
-        # Prefetch Queue: Holds 3 chunks (3MB) in memory to eliminate wait time between chunks
-        queue = asyncio.Queue(maxsize=3)
-
-        async def producer():
-            """Background worker to fetch chunks as fast as possible."""
-            current_offset = offset
-            try:
-                media_session = await self.generate_media_session(client, file_id)
-                location = await self.get_location(file_id)
-                
-                for _ in range(part_count):
-                    try:
-                        r = await media_session.send(
-                            raw.functions.upload.GetFile(
-                                location=location, offset=current_offset, limit=chunk_size
-                            ),
-                        )
-                        if isinstance(r, raw.types.upload.File):
-                            await queue.put(r.bytes)
-                        else:
-                            await queue.put(None) # Signal error/end
-                            break
-                        current_offset += chunk_size
-                    except Exception as e:
-                        logging.error(f"Producer error in client {index}: {e}")
-                        await queue.put(None)
-                        break
-                # End signal
-                await queue.put(None)
-            except Exception as e:
-                logging.error(f"Media session failed for client {index}: {e}")
-                await queue.put(None)
-
-        # Start prefetching in the background
-        producer_task = asyncio.create_task(producer())
-
         try:
+            media_session = await self.generate_media_session(client, file_id)
+            location = await self.get_location(file_id)
+            current_offset = offset
+
             for current_part in range(1, part_count + 1):
-                chunk = await queue.get()
-                
-                if chunk is None:
+                try:
+                    result = await media_session.send(
+                        raw.functions.upload.GetFile(
+                            location=location,
+                            offset=current_offset,
+                            limit=chunk_size,
+                        ),
+                    )
+                except Exception as error:
+                    logging.error(f"Media read error in client {index}: {error}")
                     break
 
+                if not isinstance(result, raw.types.upload.File):
+                    logging.error(f"Media read returned an invalid response in client {index}")
+                    break
+
+                chunk = result.bytes
                 if part_count == 1:
                     yield chunk[first_part_cut:last_part_cut]
                 elif current_part == 1:
@@ -241,15 +225,12 @@ class ByteStreamer:
                     yield chunk[:last_part_cut]
                 else:
                     yield chunk
-                
-                queue.task_done()
-                await asyncio.sleep(0)   # <--- ONLY CHANGE: yield control to event loop
+                current_offset += chunk_size
+                await asyncio.sleep(0)
 
-        except Exception as e:
-            logging.error(f"Streaming error on client {index}: {e}")
+        except Exception as error:
+            logging.error(f"Streaming error on client {index}: {error}")
         finally:
-            # Cleanup: Stop the producer and decrement workload
-            producer_task.cancel()
             logging.debug(f"Finished yielding file with client {index}.")
             work_loads[index] -= 1
 
