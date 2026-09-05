@@ -1,6 +1,7 @@
 import re
 import time
 import math
+import json
 import logging
 import secrets
 import mimetypes
@@ -11,7 +12,7 @@ from aiohttp import web
 from aiohttp.http_exceptions import BadStatusLine
 from pyrogram.errors import FloodWait
 from pyrogram.enums import ParseMode
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 from biisal.bot import multi_clients, work_loads, StreamBot
 from biisal.server.exceptions import FIleNotFound, InvalidHash
 from biisal import StartTime, __version__
@@ -31,7 +32,7 @@ routes = web.RouteTableDef()
 db = Database(Var.DATABASE_URL, Var.name)
 
 
-async def render_prepare_page(temp_data):
+async def render_prepare_page(temp_data, access_code):
     try:
         with open("biisal-file-stream-pro/biisal/template/prepare.html") as f:
             template_content = f.read()
@@ -53,6 +54,10 @@ async def render_prepare_page(temp_data):
     template_content = template_content.replace("{{file_size}}", file_size)
     template_content = template_content.replace("{{token}}", temp_data['token'])
     template_content = template_content.replace("{{tag}}", tag)
+    template_content = template_content.replace(
+        "{{access_code_json}}",
+        json.dumps(access_code),
+    )
 
     return template_content
 
@@ -101,11 +106,25 @@ async def root_route_handler(_):
 async def prepare_stream_handler(request: web.Request):
     try:
         token = request.match_info["token"]
+        access_code = request.rel_url.query.get("access_code", "").strip()
+        _, access_error = await supabase_quota.validate_access_code(access_code)
+        if access_error:
+            return web.Response(
+                text=access_error["message"],
+                status=access_error["status"],
+                content_type="text/plain",
+            )
+
         serve_domain = Var.SERVE_DOMAIN if Var.SERVE_DOMAIN in ('web', 'webx') else None
         temp_data = await db.get_temp_file(token, serve_domain=serve_domain)
         if not temp_data:
             return web.Response(text="Link expired or not found", status=404)
-        return web.Response(text=await render_prepare_page(temp_data), content_type='text/html')
+        return web.Response(
+            text=await render_prepare_page(temp_data, access_code),
+            content_type='text/html',
+        )
+    except web.HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error in prepare_stream_handler: {e}")
         return web.Response(text="Error loading page", status=500)
@@ -116,6 +135,15 @@ async def generate_stream_handler(request: web.Request):
     try:
         token = request.match_info["token"]
         player = request.rel_url.query.get("player", "plyr")
+        access_code = request.rel_url.query.get("access_code", "").strip()
+        _, access_error = await supabase_quota.validate_access_code(access_code)
+        if access_error:
+            return web.json_response(
+                {"success": False, "error": access_error["message"]},
+                status=access_error["status"],
+                content_type="application/json",
+            )
+
         serve_domain = Var.SERVE_DOMAIN if Var.SERVE_DOMAIN in ('web', 'webx') else None
         temp_data = await db.get_temp_file(token, serve_domain=serve_domain)
         if not temp_data:
@@ -187,7 +215,15 @@ async def generate_stream_handler(request: web.Request):
             scheme = request.scheme if request.scheme else 'http'
         base_url = f"{scheme}://{request_host}/"
 
-        stream_link = f"{base_url}watch/{log_msg.id}/{quote_plus(file_name)}?hash={file_hash}&player={player}"
+        stream_query = urlencode({
+            "hash": file_hash,
+            "player": player,
+            "access_code": access_code,
+        })
+        stream_link = (
+            f"{base_url}watch/{log_msg.id}/{quote_plus(file_name)}"
+            f"?{stream_query}"
+        )
 
         response_data = {
             "success": True,
@@ -211,7 +247,29 @@ async def generate_stream_handler(request: web.Request):
 @routes.get(r"/api/download/{token}")
 async def generate_download_handler(request: web.Request):
     try:
+        if not supabase_quota.downloads_enabled:
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": (
+                        "Direct downloads are temporarily disabled. "
+                        "Please use streaming."
+                    ),
+                },
+                status=403,
+                content_type="application/json",
+            )
+
         token = request.match_info["token"]
+        access_code = request.rel_url.query.get("access_code", "").strip()
+        _, access_error = await supabase_quota.validate_access_code(access_code)
+        if access_error:
+            return web.json_response(
+                {"success": False, "error": access_error["message"]},
+                status=access_error["status"],
+                content_type="application/json",
+            )
+
         serve_domain = Var.SERVE_DOMAIN if Var.SERVE_DOMAIN in ('web', 'webx') else None
         temp_data = await db.get_temp_file(token, serve_domain=serve_domain)
         if not temp_data:
@@ -283,7 +341,15 @@ async def generate_download_handler(request: web.Request):
             scheme = request.scheme if request.scheme else 'http'
         base_url = f"{scheme}://{request_host}/"
 
-        download_link = f"{base_url}{log_msg.id}/{quote_plus(file_name)}?hash={file_hash}&download=1"
+        download_query = urlencode({
+            "hash": file_hash,
+            "download": "1",
+            "access_code": access_code,
+        })
+        download_link = (
+            f"{base_url}{log_msg.id}/{quote_plus(file_name)}"
+            f"?{download_query}"
+        )
 
         response_data = {
             "success": True,
@@ -319,6 +385,9 @@ async def stream_handler(request: web.Request):
         access_code = request.rel_url.query.get("access_code")
         if not access_code:
             raise web.HTTPForbidden(text="This link requires an access_code.")
+        _, access_error = await supabase_quota.validate_access_code(access_code)
+        if access_error:
+            raise web.HTTPForbidden(text=access_error["message"])
         return web.Response(
             text=await render_page(
                 id,
@@ -348,8 +417,12 @@ async def thumb_handler(request: web.Request):
     try:
         id = int(request.match_info["id"])
         secure_hash = request.rel_url.query.get("hash")
-        if not request.rel_url.query.get("access_code"):
+        access_code = request.rel_url.query.get("access_code")
+        if not access_code:
             raise web.HTTPForbidden(text="This link requires an access_code.")
+        _, access_error = await supabase_quota.validate_access_code(access_code)
+        if access_error:
+            raise web.HTTPForbidden(text=access_error["message"])
 
         message = await StreamBot.get_messages(int(Var.BIN_CHANNEL), id)
         if not message or message.empty:
@@ -430,6 +503,12 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
     access_code = request.rel_url.query.get("access_code")
     action = "download" if request.rel_url.query.get("download") == "1" else "stream"
     lease = None
+    if not access_code:
+        raise web.HTTPForbidden(text="This link requires an access_code.")
+    if action == "download" and not supabase_quota.downloads_enabled:
+        raise web.HTTPForbidden(
+            text="Direct downloads are temporarily disabled. Please use streaming."
+        )
 
     # Multi-client logic: find the least busy bot
     sorted_indices = sorted(work_loads, key=work_loads.get)
@@ -477,6 +556,11 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
 
     if file_id.unique_id[:6] != secure_hash:
         raise InvalidHash
+
+    if request.method == "HEAD":
+        _, access_error = await supabase_quota.validate_access_code(access_code)
+        if access_error:
+            raise web.HTTPForbidden(text=access_error["message"])
 
     file_size = file_id.file_size
 
@@ -547,11 +631,21 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
         if request.method == "HEAD":
             return response
         # yield_file is now an optimized async generator in custom_dl.py
+        transfer_started = time.monotonic()
+        bytes_sent = 0
         async for chunk in tg_connect.yield_file(
             file_id, index, offset, first_part_cut, last_part_cut, part_count, chunk_size
         ):
             await response.write(chunk)
-            await asyncio.sleep(0)  # <--- ONLY CHANGE: yield control to event loop
+            bytes_sent += len(chunk)
+            max_bps = supabase_quota.max_transfer_bytes_per_second
+            if max_bps > 0:
+                target_elapsed = bytes_sent / max_bps
+                elapsed = time.monotonic() - transfer_started
+                if target_elapsed > elapsed:
+                    await asyncio.sleep(target_elapsed - elapsed)
+            else:
+                await asyncio.sleep(0)
     except (ConnectionResetError, RuntimeError):
         # User closed the player or disconnected
         pass
