@@ -190,6 +190,7 @@
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const linkType  = urlParams.get('type');
+        const accessCode = {{access_code_json}};
 
         window.addEventListener('DOMContentLoaded', () => {
             if (linkType === 'download') {
@@ -212,7 +213,11 @@
             try {
                 const controller = new AbortController();
                 const tid = setTimeout(() => controller.abort(), 45000);
-                const response = await fetch(`/api/generate/{{token}}?player=${playerType}`, {
+                const generateParams = new URLSearchParams({
+                    player: playerType,
+                    access_code: accessCode
+                });
+                const response = await fetch(`/api/generate/{{token}}?${generateParams.toString()}`, {
                     signal: controller.signal,
                     headers: { 'Accept': 'application/json' }
                 });
@@ -262,7 +267,10 @@
             try {
                 const controller = new AbortController();
                 const tid = setTimeout(() => controller.abort(), 45000);
-                const response = await fetch('/api/download/{{token}}', {
+                const downloadParams = new URLSearchParams({
+                    access_code: accessCode
+                });
+                const response = await fetch(`/api/download/{{token}}?${downloadParams.toString()}`, {
                     signal: controller.signal,
                     headers: { 'Accept': 'application/json' }
                 });
