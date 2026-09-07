@@ -1,8 +1,11 @@
 """Supabase-backed access-code validation and media quota enforcement."""
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
+import time
 from collections import defaultdict
 from typing import Optional
 
@@ -19,9 +22,9 @@ class SupabaseQuota:
         self.url = os.getenv("SUPABASE_URL", "").rstrip("/")
         self.key = os.getenv("SUPABASE_KEY", "")
         self.download_limit = self._int_env("MEDIA_DOWNLOAD_DAILY_LIMIT", 5)
-        self.stream_limit = self._int_env("MEDIA_STREAM_DAILY_LIMIT", 5)
+        self.stream_limit = self._int_env("MEDIA_STREAM_DAILY_LIMIT", 10)
         self.max_active_downloads = self._int_env(
-            "MEDIA_MAX_ACTIVE_DOWNLOADS_PER_USER", 1
+            "MEDIA_MAX_ACTIVE_DOWNLOADS_PER_USER", 3
         )
         self.max_active_streams = self._int_env(
             "MEDIA_MAX_ACTIVE_STREAMS_PER_USER", 1
@@ -30,7 +33,14 @@ class SupabaseQuota:
             "MEDIA_MAX_ACTIVE_REQUESTS_GLOBAL", 0, minimum=0
         )
         self.max_transfer_bytes_per_second = self._int_env(
-            "MEDIA_MAX_TRANSFER_BYTES_PER_SECOND", 1_000_000
+            "MEDIA_MAX_TRANSFER_BYTES_PER_SECOND", 0, minimum=0
+        )
+        self.final_link_ttl_seconds = self._int_env(
+            "MEDIA_FINAL_LINK_TTL_SECONDS", 6 * 60 * 60
+        )
+        self.link_signing_secret = (
+            os.getenv("MEDIA_LINK_SIGNING_SECRET", "").strip()
+            or os.getenv("SESSION_SECRET", "").strip()
         )
         self._active = defaultdict(lambda: {"download": 0, "stream": 0})
         self._global_active = 0
@@ -120,6 +130,62 @@ class SupabaseQuota:
         if error:
             return None, {"status": status, "message": error}
         return user_id, None
+
+    def issue_media_link(self, media_id: int, secure_hash: str, access_code: str):
+        """Create a six-hour signed claim for a generated final media URL."""
+        if not self.link_signing_secret:
+            return None
+
+        expires_at = int(time.time()) + self.final_link_ttl_seconds
+        payload = f"{media_id}:{secure_hash}:{access_code}:{expires_at}".encode()
+        signature = hmac.new(
+            self.link_signing_secret.encode(),
+            payload,
+            hashlib.sha256,
+        ).hexdigest()
+        return expires_at, signature
+
+    def validate_media_link(
+        self,
+        media_id: int,
+        secure_hash: str,
+        access_code: str,
+        expires_at: str,
+        signature: str,
+    ):
+        """Validate the expiry and signature attached to generated media URLs."""
+        if not self.link_signing_secret:
+            return {
+                "status": 503,
+                "message": "Media link signing is not configured.",
+            }
+
+        try:
+            expires_value = int(expires_at)
+        except (TypeError, ValueError):
+            return {
+                "status": 403,
+                "message": "This media link is invalid or has expired.",
+            }
+
+        if expires_value <= int(time.time()):
+            return {
+                "status": 403,
+                "message": "This media link has expired. Please generate a new link.",
+            }
+
+        payload = f"{media_id}:{secure_hash}:{access_code}:{expires_value}".encode()
+        expected = hmac.new(
+            self.link_signing_secret.encode(),
+            payload,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(expected, str(signature or "")):
+            return {
+                "status": 403,
+                "message": "This media link is invalid or has expired.",
+            }
+        return None
 
     async def acquire(self, code: str, action: str):
         """Consume one idempotent daily claim and reserve one active request."""
