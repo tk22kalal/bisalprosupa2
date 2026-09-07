@@ -62,6 +62,22 @@ async def render_prepare_page(temp_data, access_code):
     return template_content
 
 
+def validate_generated_media_link(request, media_id, secure_hash, access_code):
+    """Reject missing, forged, or expired final media-link signatures."""
+    link_error = supabase_quota.validate_media_link(
+        media_id=media_id,
+        secure_hash=secure_hash,
+        access_code=access_code,
+        expires_at=request.rel_url.query.get("expires"),
+        signature=request.rel_url.query.get("signature"),
+    )
+    if not link_error:
+        return
+    if link_error["status"] == 503:
+        raise web.HTTPServiceUnavailable(text=link_error["message"])
+    raise web.HTTPForbidden(text=link_error["message"])
+
+
 @routes.get("/favicon.ico")
 async def favicon_handler(_):
     return web.Response(status=204)
@@ -204,6 +220,21 @@ async def generate_stream_handler(request: web.Request):
             file_name = file_name.decode('utf-8', errors='ignore')
         file_name = re.sub(r"[\r\n\t\x00-\x1f\x7f]", "", str(file_name)).strip() or "file"
         file_hash = get_hash(log_msg)
+        link_claim = supabase_quota.issue_media_link(
+            media_id=log_msg.id,
+            secure_hash=file_hash,
+            access_code=access_code,
+        )
+        if not link_claim:
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "Media link signing is not configured.",
+                },
+                status=503,
+                content_type="application/json",
+            )
+        expires_at, signature = link_claim
 
         request_host = request.host
         forwarded_proto = request.headers.get('X-Forwarded-Proto', '').lower()
@@ -219,6 +250,8 @@ async def generate_stream_handler(request: web.Request):
             "hash": file_hash,
             "player": player,
             "access_code": access_code,
+            "expires": expires_at,
+            "signature": signature,
         })
         stream_link = (
             f"{base_url}watch/{log_msg.id}/{quote_plus(file_name)}"
@@ -330,6 +363,21 @@ async def generate_download_handler(request: web.Request):
             file_name = file_name.decode('utf-8', errors='ignore')
         file_name = re.sub(r"[\r\n\t\x00-\x1f\x7f]", "", str(file_name)).strip() or "file"
         file_hash = get_hash(log_msg)
+        link_claim = supabase_quota.issue_media_link(
+            media_id=log_msg.id,
+            secure_hash=file_hash,
+            access_code=access_code,
+        )
+        if not link_claim:
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "Media link signing is not configured.",
+                },
+                status=503,
+                content_type="application/json",
+            )
+        expires_at, signature = link_claim
 
         request_host = request.host
         forwarded_proto = request.headers.get('X-Forwarded-Proto', '').lower()
@@ -345,6 +393,8 @@ async def generate_download_handler(request: web.Request):
             "hash": file_hash,
             "download": "1",
             "access_code": access_code,
+            "expires": expires_at,
+            "signature": signature,
         })
         download_link = (
             f"{base_url}{log_msg.id}/{quote_plus(file_name)}"
@@ -388,12 +438,15 @@ async def stream_handler(request: web.Request):
         _, access_error = await supabase_quota.validate_access_code(access_code)
         if access_error:
             raise web.HTTPForbidden(text=access_error["message"])
+        validate_generated_media_link(request, id, secure_hash, access_code)
         return web.Response(
             text=await render_page(
                 id,
                 secure_hash,
                 player=player,
                 access_code=access_code,
+                expires_at=request.rel_url.query.get("expires"),
+                signature=request.rel_url.query.get("signature"),
             ),
             content_type='text/html',
         )
@@ -423,6 +476,7 @@ async def thumb_handler(request: web.Request):
         _, access_error = await supabase_quota.validate_access_code(access_code)
         if access_error:
             raise web.HTTPForbidden(text=access_error["message"])
+        validate_generated_media_link(request, id, secure_hash, access_code)
 
         message = await StreamBot.get_messages(int(Var.BIN_CHANNEL), id)
         if not message or message.empty:
@@ -505,6 +559,7 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
     lease = None
     if not access_code:
         raise web.HTTPForbidden(text="This link requires an access_code.")
+    validate_generated_media_link(request, id, secure_hash, access_code)
     if action == "download" and not supabase_quota.downloads_enabled:
         raise web.HTTPForbidden(
             text="Direct downloads are temporarily disabled. Please use streaming."
