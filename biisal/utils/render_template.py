@@ -15,7 +15,15 @@ def _sanitize_filename(name: str) -> str:
     return re.sub(r"[\r\n\t\x00-\x1f\x7f]", "", str(name or "")).strip()
 
 
-async def render_page(id, secure_hash, src=None, player=None, access_code=None):
+async def render_page(
+    id,
+    secure_hash,
+    src=None,
+    player=None,
+    access_code=None,
+    expires_at=None,
+    signature=None,
+):
     file_data = await get_file_ids(StreamBot, int(Var.BIN_CHANNEL), int(id))
 
     if file_data.unique_id[:6] != secure_hash:
@@ -29,6 +37,10 @@ async def render_page(id, secure_hash, src=None, player=None, access_code=None):
     query = {"hash": secure_hash}
     if access_code:
         query["access_code"] = access_code
+    if expires_at:
+        query["expires"] = expires_at
+    if signature:
+        query["signature"] = signature
     src = urllib.parse.urljoin(
         Var.URL,
         f"{id}/{urllib.parse.quote_plus(clean_name)}?{urllib.parse.urlencode(query)}",
@@ -44,6 +56,10 @@ async def render_page(id, secure_hash, src=None, player=None, access_code=None):
         poster_query = {"hash": secure_hash}
         if access_code:
             poster_query["access_code"] = access_code
+        if expires_at:
+            poster_query["expires"] = expires_at
+        if signature:
+            poster_query["signature"] = signature
         poster_url = urllib.parse.urljoin(
             Var.URL,
             f"thumb/{id}?{urllib.parse.urlencode(poster_query)}",
