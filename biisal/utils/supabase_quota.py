@@ -40,6 +40,12 @@ class SupabaseQuota:
         self.final_link_ttl_seconds = self._int_env(
             "MEDIA_FINAL_LINK_TTL_SECONDS", 6 * 60 * 60
         )
+        # Keep already-issued links usable when a deployment rotates its
+        # signing secret.  Supabase access-code validation still remains
+        # mandatory in the compatibility path.
+        self.allow_legacy_media_links = os.getenv(
+            "MEDIA_ALLOW_LEGACY_UNVERIFIED_LINKS", "true"
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.link_signing_secret = (
             os.getenv("MEDIA_LINK_SIGNING_SECRET", "").strip()
             or os.getenv("SESSION_SECRET", "").strip()
