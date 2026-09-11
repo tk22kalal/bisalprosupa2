@@ -247,10 +247,11 @@ async def generate_stream_handler(request: web.Request):
                 status=404,
                 content_type='application/json'
             )
+        # Access codes identify the user, not a single lecture.  The lecture
+        # key is still carried through the generated link for progress and
+        # quota tracking, but must not prevent the same user from opening
+        # another authorized lecture.
         lecture_key = lecture_key_for(temp_data)
-        _, bind_error = await supabase_quota.bind_lecture(access_code, lecture_key)
-        if bind_error:
-            return quota_error_response(bind_error)
 
         client = StreamBot
         original_msg = await client.get_messages(temp_data['from_chat_id'], temp_data['message_id'])
@@ -396,10 +397,11 @@ async def generate_download_handler(request: web.Request):
                 status=404,
                 content_type='application/json'
             )
+        # Access codes identify the user, not a single lecture.  The lecture
+        # key is still carried through the generated link for progress and
+        # quota tracking, but must not prevent the same user from opening
+        # another authorized lecture.
         lecture_key = lecture_key_for(temp_data)
-        _, bind_error = await supabase_quota.bind_lecture(access_code, lecture_key)
-        if bind_error:
-            return quota_error_response(bind_error)
 
         client = StreamBot
         original_msg = await client.get_messages(temp_data['from_chat_id'], temp_data['message_id'])
