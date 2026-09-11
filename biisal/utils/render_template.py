@@ -44,9 +44,12 @@ async def render_page(
         query["expires"] = expires_at
     if signature:
         query["signature"] = signature
-    src = urllib.parse.urljoin(
-        Var.URL,
-        f"{id}/{urllib.parse.quote_plus(clean_name)}?{urllib.parse.urlencode(query)}",
+    # Keep media URLs on the same origin as the page.  Var.URL can be a
+    # deployment default (or 0.0.0.0 in Replit) and would make the player
+    # request a different host than the one that generated the signed link.
+    src = (
+        f"/{id}/{urllib.parse.quote_plus(clean_name)}"
+        f"?{urllib.parse.urlencode(query)}"
     )
 
     mime_type = file_data.mime_type or ""
@@ -65,9 +68,8 @@ async def render_page(
             poster_query["expires"] = expires_at
         if signature:
             poster_query["signature"] = signature
-        poster_url = urllib.parse.urljoin(
-            Var.URL,
-            f"thumb/{id}?{urllib.parse.urlencode(poster_query)}",
+        poster_url = (
+            f"/thumb/{id}?{urllib.parse.urlencode(poster_query)}"
         )
 
     if tag in ("video", "audio"):
