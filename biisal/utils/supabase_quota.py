@@ -21,6 +21,8 @@ class SupabaseQuota:
     def __init__(self):
         self.url = os.getenv("SUPABASE_URL", "").rstrip("/")
         self.key = os.getenv("SUPABASE_KEY", "")
+        self.connector_host = os.getenv("REPLIT_CONNECTORS_HOSTNAME", "").strip()
+        self.replit_identity = os.getenv("REPL_IDENTITY", "").strip()
         self.download_limit = self._int_env("MEDIA_DOWNLOAD_DAILY_LIMIT", 5)
         self.stream_limit = self._int_env("MEDIA_STREAM_DAILY_LIMIT", 10)
         self.max_active_downloads = self._int_env(
@@ -55,7 +57,38 @@ class SupabaseQuota:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.url and self.key)
+        return bool(
+            (self.url and self.key)
+            or (self.connector_host and self.replit_identity)
+        )
+
+    @property
+    def using_replit_connector(self) -> bool:
+        """Use the attached Supabase connector when raw Supabase credentials are absent."""
+        return not (self.url and self.key) and bool(
+            self.connector_host and self.replit_identity
+        )
+
+    def _rpc_request_details(self, function_name: str):
+        if self.using_replit_connector:
+            base_url = self.connector_host
+            if not base_url.startswith(("http://", "https://")):
+                base_url = f"https://{base_url}"
+            endpoint = (
+                f"{base_url.rstrip('/')}/api/v2/proxy/rest/v1/rpc/{function_name}"
+            )
+            headers = {
+                "Connector-Name": "supabase",
+                "X-Replit-Token": f"repl {self.replit_identity}",
+            }
+            return endpoint, headers
+
+        endpoint = f"{self.url}/rest/v1/rpc/{function_name}"
+        headers = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+        }
+        return endpoint, headers
 
     @property
     def downloads_enabled(self) -> bool:
@@ -70,10 +103,9 @@ class SupabaseQuota:
         if not self.enabled:
             return None, "Supabase quota service is not configured"
 
-        endpoint = f"{self.url}/rest/v1/rpc/{function_name}"
+        endpoint, auth_headers = self._rpc_request_details(function_name)
         headers = {
-            "apikey": self.key,
-            "Authorization": f"Bearer {self.key}",
+            **auth_headers,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
