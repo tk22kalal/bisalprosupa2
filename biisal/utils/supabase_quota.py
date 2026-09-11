@@ -131,13 +131,21 @@ class SupabaseQuota:
             return None, {"status": status, "message": error}
         return user_id, None
 
-    def issue_media_link(self, media_id: int, secure_hash: str, access_code: str):
+    def issue_media_link(
+        self,
+        media_id: int,
+        secure_hash: str,
+        access_code: str,
+        lecture_key: str,
+    ):
         """Create a six-hour signed claim for a generated final media URL."""
         if not self.link_signing_secret:
             return None
 
         expires_at = int(time.time()) + self.final_link_ttl_seconds
-        payload = f"{media_id}:{secure_hash}:{access_code}:{expires_at}".encode()
+        payload = (
+            f"{media_id}:{secure_hash}:{access_code}:{lecture_key}:{expires_at}"
+        ).encode()
         signature = hmac.new(
             self.link_signing_secret.encode(),
             payload,
@@ -150,6 +158,7 @@ class SupabaseQuota:
         media_id: int,
         secure_hash: str,
         access_code: str,
+        lecture_key: str,
         expires_at: str,
         signature: str,
     ):
@@ -174,7 +183,9 @@ class SupabaseQuota:
                 "message": "This media link has expired. Please generate a new link.",
             }
 
-        payload = f"{media_id}:{secure_hash}:{access_code}:{expires_value}".encode()
+        payload = (
+            f"{media_id}:{secure_hash}:{access_code}:{lecture_key}:{expires_value}"
+        ).encode()
         expected = hmac.new(
             self.link_signing_secret.encode(),
             payload,
@@ -187,11 +198,91 @@ class SupabaseQuota:
             }
         return None
 
-    async def acquire(self, code: str, action: str):
-        """Consume one idempotent daily claim and reserve one active request."""
+    async def bind_lecture(self, code: str, lecture_key: str):
+        """Bind a bearer access code to one stable lecture identity."""
         code = (code or "").strip()
-        if not code:
-            return None, {"status": 403, "message": "A valid access_code is required."}
+        lecture_key = (lecture_key or "").strip()
+        if not code or not lecture_key:
+            return None, {
+                "status": 400,
+                "message": "A valid access_code and lecture key are required.",
+            }
+
+        result, error = await self._rpc(
+            "bind_media_access_code",
+            {"p_code": code, "p_lecture_key": lecture_key},
+        )
+        if error:
+            return None, {"status": 503, "message": error}
+
+        result = _first_object(result)
+        if not result or not result.get("allowed"):
+            reason = (result or {}).get("reason")
+            message = (
+                "This access code is already assigned to another lecture."
+                if reason == "bound_to_different_lecture"
+                else "This link is invalid or has expired."
+            )
+            return None, {"status": 403, "message": message}
+        return result.get("user_id"), None
+
+    async def get_watch_progress(self, code: str, lecture_key: str):
+        """Read a user's saved position for one lecture."""
+        result, error = await self._rpc(
+            "get_lecture_progress",
+            {
+                "p_code": (code or "").strip(),
+                "p_lecture_key": (lecture_key or "").strip(),
+            },
+        )
+        if error:
+            return None, {"status": 503, "message": error}
+
+        result = _first_object(result)
+        if not result or not result.get("allowed"):
+            return None, {
+                "status": 403,
+                "message": "This link is invalid or has expired.",
+            }
+        return result, None
+
+    async def save_watch_progress(
+        self,
+        code: str,
+        lecture_key: str,
+        position_seconds: float,
+        duration_seconds: float,
+    ):
+        """Persist progress without allowing an out-of-order request to regress it."""
+        result, error = await self._rpc(
+            "save_lecture_progress",
+            {
+                "p_code": (code or "").strip(),
+                "p_lecture_key": (lecture_key or "").strip(),
+                "p_position_seconds": max(0, float(position_seconds)),
+                "p_duration_seconds": max(0, float(duration_seconds)),
+            },
+        )
+        if error:
+            return None, {"status": 503, "message": error}
+
+        result = _first_object(result)
+        if not result or not result.get("allowed"):
+            return None, {
+                "status": 403,
+                "message": "This link is invalid or has expired.",
+            }
+        return result, None
+
+    async def acquire(self, code: str, action: str, lecture_key: str):
+        """Consume one idempotent daily lecture claim and reserve an active request."""
+        code = (code or "").strip()
+        lecture_key = (lecture_key or "").strip()
+        if not code or not lecture_key:
+            return None, {
+                "status": 403,
+                "message": "A valid access_code and lecture key are required.",
+            }
         if action not in ("download", "stream"):
             return None, {"status": 400, "message": "Invalid media action."}
         if action == "download" and not self.downloads_enabled:
@@ -238,6 +329,7 @@ class SupabaseQuota:
             {
                 "p_code": code,
                 "p_action": action,
+                "p_lecture_key": lecture_key,
             },
         )
         if error:
