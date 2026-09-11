@@ -46,6 +46,12 @@ class SupabaseQuota:
         self.allow_legacy_media_links = os.getenv(
             "MEDIA_ALLOW_LEGACY_UNVERIFIED_LINKS", "true"
         ).strip().lower() in {"1", "true", "yes", "on"}
+        # Older access codes were bound to a single lecture identity.  The
+        # current bot treats a code as a user-level bearer code, so a stale
+        # lecture binding must not block an otherwise valid signed media link.
+        self.allow_legacy_unbound_lectures = os.getenv(
+            "MEDIA_ALLOW_LEGACY_UNBOUND_LECTURES", "true"
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.link_signing_secret = (
             os.getenv("MEDIA_LINK_SIGNING_SECRET", "").strip()
             or os.getenv("SESSION_SECRET", "").strip()
@@ -386,6 +392,16 @@ class SupabaseQuota:
                         "Please try again after the daily reset."
                     ),
                 }
+            if (
+                self.allow_legacy_unbound_lectures
+                and reason in {"invalid_code", "bound_to_different_lecture"}
+            ):
+                logger.warning(
+                    "Allowing validated legacy access code without lecture binding "
+                    "for %s action",
+                    action,
+                )
+                return None, None
             return None, {
                 "status": 403,
                 "message": "This link is invalid or has expired.",
