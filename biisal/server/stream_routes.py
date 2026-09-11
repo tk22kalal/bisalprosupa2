@@ -2,6 +2,7 @@ import re
 import time
 import math
 import json
+import hashlib
 import logging
 import secrets
 import mimetypes
@@ -30,6 +31,30 @@ stream_log = logging.getLogger("stream.routes")
 routes = web.RouteTableDef()
 
 db = Database(Var.DATABASE_URL, Var.name)
+
+
+def lecture_key_for(temp_data):
+    """Return a stable opaque identity for the source lecture."""
+    source_identity = temp_data.get("file_unique_id") or (
+        f"{temp_data.get('from_chat_id')}:{temp_data.get('message_id')}"
+    )
+    return hashlib.sha256(f"lecture:{source_identity}".encode()).hexdigest()
+
+
+def quota_error_response(error, json_response=True):
+    if json_response:
+        return web.json_response(
+            {"success": False, "error": error["message"]},
+            status=error["status"],
+            content_type="application/json",
+        )
+    if error["status"] == 429:
+        return web.HTTPTooManyRequests(text=error["message"])
+    if error["status"] == 403:
+        return web.HTTPForbidden(text=error["message"])
+    if error["status"] == 400:
+        return web.HTTPBadRequest(text=error["message"])
+    return web.HTTPServiceUnavailable(text=error["message"])
 
 
 async def render_prepare_page(temp_data, access_code):
@@ -68,6 +93,7 @@ def validate_generated_media_link(request, media_id, secure_hash, access_code):
         media_id=media_id,
         secure_hash=secure_hash,
         access_code=access_code,
+        lecture_key=request.rel_url.query.get("lecture_key"),
         expires_at=request.rel_url.query.get("expires"),
         signature=request.rel_url.query.get("signature"),
     )
@@ -114,6 +140,59 @@ async def root_route_handler(_):
                 )
             ),
             "version": __version__,
+        }
+    )
+
+
+@routes.get("/api/progress")
+async def get_progress_handler(request: web.Request):
+    access_code = request.rel_url.query.get("access_code", "").strip()
+    lecture_key = request.rel_url.query.get("lecture_key", "").strip()
+    progress, error = await supabase_quota.get_watch_progress(
+        access_code, lecture_key
+    )
+    if error:
+        return quota_error_response(error)
+    return web.json_response(
+        {
+            "success": True,
+            "position_seconds": float(progress.get("position_seconds") or 0),
+            "duration_seconds": float(progress.get("duration_seconds") or 0),
+        }
+    )
+
+
+@routes.post("/api/progress")
+async def save_progress_handler(request: web.Request):
+    try:
+        payload = await request.json()
+        position_seconds = float(payload.get("position_seconds", 0))
+        duration_seconds = float(payload.get("duration_seconds", 0))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return web.json_response(
+            {"success": False, "error": "Invalid watch progress payload."},
+            status=400,
+        )
+
+    if not math.isfinite(position_seconds) or not math.isfinite(duration_seconds):
+        return web.json_response(
+            {"success": False, "error": "Invalid watch progress payload."},
+            status=400,
+        )
+
+    progress, error = await supabase_quota.save_watch_progress(
+        payload.get("access_code", ""),
+        payload.get("lecture_key", ""),
+        position_seconds,
+        duration_seconds,
+    )
+    if error:
+        return quota_error_response(error)
+    return web.json_response(
+        {
+            "success": True,
+            "position_seconds": float(progress.get("position_seconds") or 0),
+            "duration_seconds": float(progress.get("duration_seconds") or 0),
         }
     )
 
@@ -168,6 +247,10 @@ async def generate_stream_handler(request: web.Request):
                 status=404,
                 content_type='application/json'
             )
+        lecture_key = lecture_key_for(temp_data)
+        _, bind_error = await supabase_quota.bind_lecture(access_code, lecture_key)
+        if bind_error:
+            return quota_error_response(bind_error)
 
         client = StreamBot
         original_msg = await client.get_messages(temp_data['from_chat_id'], temp_data['message_id'])
@@ -224,6 +307,7 @@ async def generate_stream_handler(request: web.Request):
             media_id=log_msg.id,
             secure_hash=file_hash,
             access_code=access_code,
+            lecture_key=lecture_key,
         )
         if not link_claim:
             return web.json_response(
@@ -250,6 +334,7 @@ async def generate_stream_handler(request: web.Request):
             "hash": file_hash,
             "player": player,
             "access_code": access_code,
+            "lecture_key": lecture_key,
             "expires": expires_at,
             "signature": signature,
         })
@@ -311,6 +396,10 @@ async def generate_download_handler(request: web.Request):
                 status=404,
                 content_type='application/json'
             )
+        lecture_key = lecture_key_for(temp_data)
+        _, bind_error = await supabase_quota.bind_lecture(access_code, lecture_key)
+        if bind_error:
+            return quota_error_response(bind_error)
 
         client = StreamBot
         original_msg = await client.get_messages(temp_data['from_chat_id'], temp_data['message_id'])
@@ -367,6 +456,7 @@ async def generate_download_handler(request: web.Request):
             media_id=log_msg.id,
             secure_hash=file_hash,
             access_code=access_code,
+            lecture_key=lecture_key,
         )
         if not link_claim:
             return web.json_response(
@@ -393,6 +483,7 @@ async def generate_download_handler(request: web.Request):
             "hash": file_hash,
             "download": "1",
             "access_code": access_code,
+            "lecture_key": lecture_key,
             "expires": expires_at,
             "signature": signature,
         })
@@ -433,6 +524,7 @@ async def stream_handler(request: web.Request):
             secure_hash = request.rel_url.query.get("hash")
         player = request.rel_url.query.get("player")
         access_code = request.rel_url.query.get("access_code")
+        lecture_key = request.rel_url.query.get("lecture_key")
         if not access_code:
             raise web.HTTPForbidden(text="This link requires an access_code.")
         _, access_error = await supabase_quota.validate_access_code(access_code)
@@ -445,6 +537,7 @@ async def stream_handler(request: web.Request):
                 secure_hash,
                 player=player,
                 access_code=access_code,
+                lecture_key=lecture_key,
                 expires_at=request.rel_url.query.get("expires"),
                 signature=request.rel_url.query.get("signature"),
             ),
@@ -555,6 +648,7 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
     """
     range_header = request.headers.get("Range", 0)
     access_code = request.rel_url.query.get("access_code")
+    lecture_key = request.rel_url.query.get("lecture_key")
     action = "download" if request.rel_url.query.get("download") == "1" else "stream"
     lease = None
     if not access_code:
@@ -649,6 +743,7 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
         lease, quota_error = await supabase_quota.acquire(
             access_code,
             action,
+            lecture_key,
         )
         if quota_error:
             status = quota_error["status"]
