@@ -52,7 +52,8 @@
             controlsList="nodownload"
             oncontextmenu="return false;"
             crossorigin="anonymous">
-            <source src="{{ file_url }}" type="application/x-mpegURL">
+            <!-- These links are direct Telegram media streams, not HLS playlists. -->
+            <source src="{{ file_url }}" type="{{ mime_type or 'video/mp4' }}">
         </video>
     </div>
 
