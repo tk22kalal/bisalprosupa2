@@ -87,18 +87,49 @@ async def render_prepare_page(temp_data, access_code):
     return template_content
 
 
-def validate_generated_media_link(request, media_id, secure_hash, access_code):
-    """Reject missing, forged, or expired final media-link signatures."""
+async def validate_generated_media_link(request, media_id, secure_hash, access_code):
+    """Validate a final media link without breaking links across secret rotation.
+
+    A signed link is preferred.  During a deployment secret rotation, an
+    already-issued link can have a valid access code and expiry but an HMAC
+    from the previous instance.  The compatibility path still validates the
+    access code against Supabase and the expiry locally before allowing it.
+    """
+    lecture_key = request.rel_url.query.get("lecture_key")
+    expires_at = request.rel_url.query.get("expires")
+    signature = request.rel_url.query.get("signature")
     link_error = supabase_quota.validate_media_link(
         media_id=media_id,
         secure_hash=secure_hash,
         access_code=access_code,
-        lecture_key=request.rel_url.query.get("lecture_key"),
-        expires_at=request.rel_url.query.get("expires"),
-        signature=request.rel_url.query.get("signature"),
+        lecture_key=lecture_key,
+        expires_at=expires_at,
+        signature=signature,
     )
     if not link_error:
         return
+
+    if supabase_quota.allow_legacy_media_links and link_error["status"] in {
+        403,
+        503,
+    }:
+        try:
+            if int(expires_at) <= int(time.time()):
+                raise ValueError
+        except (TypeError, ValueError):
+            raise web.HTTPForbidden(
+                text="This media link has expired. Please generate a new link."
+            )
+
+        _, access_error = await supabase_quota.validate_access_code(access_code)
+        if not access_error:
+            stream_log.warning(
+                "Accepted legacy media link after signature mismatch for media %s",
+                media_id,
+            )
+            return
+        link_error = access_error
+
     if link_error["status"] == 503:
         raise web.HTTPServiceUnavailable(text=link_error["message"])
     raise web.HTTPForbidden(text=link_error["message"])
@@ -532,7 +563,7 @@ async def stream_handler(request: web.Request):
         _, access_error = await supabase_quota.validate_access_code(access_code)
         if access_error:
             raise web.HTTPForbidden(text=access_error["message"])
-        validate_generated_media_link(request, id, secure_hash, access_code)
+        await validate_generated_media_link(request, id, secure_hash, access_code)
         return web.Response(
             text=await render_page(
                 id,
@@ -571,7 +602,7 @@ async def thumb_handler(request: web.Request):
         _, access_error = await supabase_quota.validate_access_code(access_code)
         if access_error:
             raise web.HTTPForbidden(text=access_error["message"])
-        validate_generated_media_link(request, id, secure_hash, access_code)
+        await validate_generated_media_link(request, id, secure_hash, access_code)
 
         message = await StreamBot.get_messages(int(Var.BIN_CHANNEL), id)
         if not message or message.empty:
@@ -655,7 +686,7 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
     lease = None
     if not access_code:
         raise web.HTTPForbidden(text="This link requires an access_code.")
-    validate_generated_media_link(request, id, secure_hash, access_code)
+    await validate_generated_media_link(request, id, secure_hash, access_code)
     if action == "download" and not supabase_quota.downloads_enabled:
         raise web.HTTPForbidden(
             text="Direct downloads are temporarily disabled. Please use streaming."
