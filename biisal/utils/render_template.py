@@ -21,6 +21,7 @@ async def render_page(
     src=None,
     player=None,
     access_code=None,
+    lecture_key=None,
     expires_at=None,
     signature=None,
 ):
@@ -37,6 +38,8 @@ async def render_page(
     query = {"hash": secure_hash}
     if access_code:
         query["access_code"] = access_code
+    if lecture_key:
+        query["lecture_key"] = lecture_key
     if expires_at:
         query["expires"] = expires_at
     if signature:
@@ -56,6 +59,8 @@ async def render_page(
         poster_query = {"hash": secure_hash}
         if access_code:
             poster_query["access_code"] = access_code
+        if lecture_key:
+            poster_query["lecture_key"] = lecture_key
         if expires_at:
             poster_query["expires"] = expires_at
         if signature:
