@@ -2476,9 +2476,68 @@ media-container {
             const video = document.querySelector('video-player video') || document.querySelector('video');
             if (!video) return;
 
+             // Save and restore the user's position for this lecture. The
+             // server clamps and stores the greatest position received, so a
+             // reconnect or a late browser request cannot move it backwards.
+             const mediaUrl = new URL(videoUrl, window.location.href);
+             const progressParams = new URLSearchParams({
+                 access_code: mediaUrl.searchParams.get('access_code') || '',
+                 lecture_key: mediaUrl.searchParams.get('lecture_key') || ''
+             });
+             const progressUrl = '/api/progress?' + progressParams.toString();
+             let progressLoaded = false;
+             let lastSavedPosition = -1;
+             let saveInFlight = false;
+
+             async function loadWatchProgress() {
+                 if (progressLoaded) return;
+                 progressLoaded = true;
+                 try {
+                     const response = await fetch(progressUrl, { headers: { 'Accept': 'application/json' } });
+                     if (!response.ok) return;
+                     const saved = await response.json();
+                     const duration = Number(video.duration);
+                     const position = Number(saved.position_seconds || 0);
+                     if (position > 3 && (!duration || position < duration - 3) && video.currentTime < 1) {
+                         video.currentTime = position;
+                     }
+                     lastSavedPosition = position;
+                 } catch (error) {
+                     console.warn('Could not load watch progress', error);
+                 }
+             }
+
+             function saveWatchProgress(force = false) {
+                 const position = Number(video.currentTime);
+                 const duration = Number(video.duration);
+                 if (!Number.isFinite(position) || !Number.isFinite(duration) || position < 1) return;
+                 if (!force && lastSavedPosition >= 0 && position - lastSavedPosition < 5) return;
+                 if (saveInFlight && !force) return;
+                 lastSavedPosition = Math.max(lastSavedPosition, position);
+                 saveInFlight = true;
+                 fetch('/api/progress', {
+                     method: 'POST',
+                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                     body: JSON.stringify({
+                         access_code: progressParams.get('access_code'),
+                         lecture_key: progressParams.get('lecture_key'),
+                         position_seconds: position,
+                         duration_seconds: duration
+                     }),
+                     keepalive: force
+                 }).catch(() => {}).finally(() => { saveInFlight = false; });
+             }
+
+             video.addEventListener('loadedmetadata', loadWatchProgress, { once: true });
+             video.addEventListener('timeupdate', () => saveWatchProgress(false));
+             video.addEventListener('pause', () => saveWatchProgress(true));
+             video.addEventListener('ended', () => saveWatchProgress(true));
+             window.addEventListener('pagehide', () => saveWatchProgress(true));
+
             // Helper to hide loader when ready
             function onReady() {
                 hideLoader();
+                 loadWatchProgress();
             }
 
             if (videoUrl.includes('.m3u8') && typeof Hls !== 'undefined' && Hls.isSupported()) {
