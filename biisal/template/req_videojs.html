@@ -130,6 +130,64 @@
             }
         });
 
+        // Persist progress by user + lecture, not by the temporary Telegram
+        // message ID. This lets a reconnect resume without downloading old
+        // ranges and does not create another daily lecture claim.
+        const mediaUrl = new URL("{{ file_url }}", window.location.href);
+        const progressParams = new URLSearchParams({
+            access_code: mediaUrl.searchParams.get('access_code') || '',
+            lecture_key: mediaUrl.searchParams.get('lecture_key') || ''
+        });
+        const progressUrl = '/api/progress?' + progressParams.toString();
+        let progressLoaded = false;
+        let lastSavedPosition = -1;
+        let saveInFlight = false;
+
+        async function loadWatchProgress() {
+            if (progressLoaded) return;
+            progressLoaded = true;
+            try {
+                const response = await fetch(progressUrl, { headers: { 'Accept': 'application/json' } });
+                if (!response.ok) return;
+                const saved = await response.json();
+                const duration = Number(player.duration());
+                const position = Number(saved.position_seconds || 0);
+                if (position > 3 && (!duration || position < duration - 3) && player.currentTime() < 1) {
+                    player.currentTime(position);
+                }
+                lastSavedPosition = position;
+            } catch (error) {
+                console.warn('Could not load watch progress', error);
+            }
+        }
+
+        function saveWatchProgress(force = false) {
+            const position = Number(player.currentTime());
+            const duration = Number(player.duration());
+            if (!Number.isFinite(position) || !Number.isFinite(duration) || position < 1) return;
+            if (!force && lastSavedPosition >= 0 && position - lastSavedPosition < 5) return;
+            if (saveInFlight && !force) return;
+            lastSavedPosition = Math.max(lastSavedPosition, position);
+            saveInFlight = true;
+            fetch('/api/progress', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({
+                    access_code: progressParams.get('access_code'),
+                    lecture_key: progressParams.get('lecture_key'),
+                    position_seconds: position,
+                    duration_seconds: duration
+                }),
+                keepalive: force
+            }).catch(() => {}).finally(() => { saveInFlight = false; });
+        }
+
+        player.on('loadedmetadata', loadWatchProgress);
+        player.on('timeupdate', () => saveWatchProgress(false));
+        player.on('pause', () => saveWatchProgress(true));
+        player.on('ended', () => saveWatchProgress(true));
+        window.addEventListener('pagehide', () => saveWatchProgress(true));
+
         // ─────────────────────────────────────────
         // PLAYER CONTROLS & INTERACTIONS
         // ─────────────────────────────────────────
@@ -168,6 +226,7 @@
         }
 
         player.ready(() => {
+            loadWatchProgress();
             playerElement.addEventListener('touchstart', handleTap, { passive: true });
             playerElement.addEventListener('click', handleTap);
         });
