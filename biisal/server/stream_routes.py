@@ -646,9 +646,9 @@ async def _home_dc(index: int) -> int:
 
 async def media_streamer(request: web.Request, id: int, secure_hash: str):
     """
-    Optimized media streamer using StreamResponse and prefetching for high-speed streaming.
+    Stream Telegram media with browser-compatible range semantics.
     """
-    range_header = request.headers.get("Range", 0)
+    range_header = request.headers.get("Range")
     access_code = request.rel_url.query.get("access_code")
     lecture_key = request.rel_url.query.get("lecture_key")
     action = "download" if request.rel_url.query.get("download") == "1" else "stream"
@@ -715,19 +715,39 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
 
     file_size = file_id.file_size
 
-    # Handle Range Headers for Seeking (Crucial for Video.js/Plyr)
-    if range_header:
-        from_bytes, until_bytes = range_header.replace("bytes=", "").split("-")
-        from_bytes = int(from_bytes)
-        until_bytes = int(until_bytes) if until_bytes else file_size - 1
-    else:
-        from_bytes = request.http_range.start or 0
-        until_bytes = (request.http_range.stop or file_size) - 1
+    # Browsers use byte ranges for metadata, seeking, and resumed downloads.
+    # Parse the header ourselves so suffix ranges (bytes=-500) and malformed
+    # ranges return 416 instead of becoming a 500 response.
+    is_partial = bool(range_header)
+    try:
+        if not range_header:
+            from_bytes, until_bytes = 0, file_size - 1
+        else:
+            unit, range_value = range_header.split("=", 1)
+            if unit.strip().lower() != "bytes" or "," in range_value:
+                raise ValueError("unsupported range")
+            start_text, end_text = range_value.strip().split("-", 1)
+            if not start_text:
+                suffix_length = int(end_text)
+                if suffix_length <= 0:
+                    raise ValueError("invalid suffix range")
+                from_bytes = max(file_size - suffix_length, 0)
+                until_bytes = file_size - 1
+            else:
+                from_bytes = int(start_text)
+                until_bytes = int(end_text) if end_text else file_size - 1
+    except (TypeError, ValueError):
+        from_bytes, until_bytes = -1, -1
 
-    if (until_bytes > file_size) or (from_bytes < 0) or (until_bytes < from_bytes):
+    if (
+        file_size <= 0
+        or from_bytes < 0
+        or until_bytes < from_bytes
+        or from_bytes >= file_size
+    ):
         return web.Response(
             status=416,
-            body="416: Range not satisfiable",
+            text="416: Range not satisfiable",
             headers={"Content-Range": f"bytes */{file_size}"},
         )
 
@@ -765,17 +785,23 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
         if not file_name:
             file_name = f"{secrets.token_hex(2)}.bin"
 
-    # Use StreamResponse for better performance and reduced buffering
+    safe_name = file_name or f"file-{id}"
+    disposition = "attachment" if action == "download" else "inline"
+    headers = {
+        "Content-Type": mime_type,
+        "Content-Length": str(req_length),
+        "Content-Disposition": f'{disposition}; filename="{safe_name}"',
+        "Accept-Ranges": "bytes",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+        "Cache-Control": "no-store",
+    }
+    if is_partial:
+        headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+
     response = web.StreamResponse(
-        status=206 if range_header else 200,
-        headers={
-            "Content-Type": f"{mime_type}",
-            "Content-Range": f"bytes {from_bytes}-{until_bytes}/{file_size}",
-            "Content-Length": str(req_length),
-            "Content-Disposition": f'attachment; filename="{file_name}"',
-            "Accept-Ranges": "bytes",
-            "Access-Control-Allow-Origin": "*", # Good for PWA usage
-        },
+        status=206 if is_partial else 200,
+        headers=headers,
     )
 
     try:
